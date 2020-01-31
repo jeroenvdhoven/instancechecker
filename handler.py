@@ -2,18 +2,18 @@ import json
 import boto3
 from botocore.exceptions import ClientError
 
-# Make sure that any email address you plan to send to is added to SES
-# Also: this assumes the name of your account IS an email address
-email_client = boto3.client('ses')
-sender_email = 'source email address'
-always_send_to = ['<addresses to always send to>']
+sender_email = 'instancebot@outlook.com'
+always_send_to = ['lbootsman@mobiquityinc.com']
 
-def send_email(source, target, body):
+
+def send_email(source, target, body, email_client):
     targets = []
     targets.extend(always_send_to)
-    targets.append(target)
+    if target is not None:
+        targets.append(target)
+
     try:
-    #Provide the contents of the email.
+        # Provide the contents of the email.
         response = email_client.send_email(
             Destination={
                 'ToAddresses': targets
@@ -32,14 +32,17 @@ def send_email(source, target, body):
             },
             Source=source
         )
-    # Display an error if something goes wrong.	
+    # Display an error if something goes wrong.
     except ClientError as e:
         print(e.response['Error']['Message'])
     else:
         print("Email sent! Message ID: {0}".format(response['MessageId'])),
-    
-    
-def send_warning_email(source, target, instance_name, region):
+
+
+def send_warning_email(source, target, instance_name, region, email_client):
+    hail = "-unknown-" if target is None else target
+
+
     message = """
 Hi {email},
 
@@ -49,12 +52,13 @@ turn of your machine.
 Thank you very much in advance,
 
 Lambda-bot
-    """.format(email = target, instance = instance_name, region = region)
-    send_email(source, target, message)
-    
-    
+    """.format(email=hail, instance=instance_name, region=region)
+    send_email(source, target, message, email_client=email_client)
+
+
 def inform_about_running_instances(instances, region):
-    local_cloudtrail = boto3.client('cloudtrail', region_name = region)
+    email_client = boto3.client('ses', region_name=region)
+    local_cloudtrail = boto3.client('cloudtrail', region_name=region)
 
     response = local_cloudtrail.lookup_events(
         LookupAttributes=[{
@@ -63,35 +67,46 @@ def inform_about_running_instances(instances, region):
         }],
         MaxResults=100
     )
-    
+
     events = response['Events']
     for instance in instances:
         instance_id = instance['InstanceId']
+        email_send = False
+
         for event in events:
+
             for resource in event['Resources']:
-                if(resource['ResourceType'] == 'AWS::EC2::Instance' and instance_id == resource['ResourceName']):
+                if (resource['ResourceType'] == 'AWS::EC2::Instance' and instance_id == resource['ResourceName']):
                     email_address = event['Username']
-                    send_warning_email(sender_email, email_address, instance_id, region)
-                    
+                    send_warning_email(sender_email, email_address, instance_id, region, email_client)
+                    email_send = True
+                    break
+
+            if email_send:
+                break
+
+        if not email_send:
+            send_warning_email(sender_email, None, instance_id, region, email_client)
+
 
 def check_region(region):
-    local_ec2 = boto3.client('ec2', region_name = region)
-    response = local_ec2.describe_instances(Filters = [{
+    local_ec2 = boto3.client('ec2', region_name=region)
+    response = local_ec2.describe_instances(Filters=[{
         'Name': 'instance-state-code',
-        'Values': ['16'] # 16: running. 80: stopped
+        'Values': ['16']  # 16: running. 80: stopped
     }])
-    
+
     reservations = response['Reservations']
-    
+
     for reservation in reservations:
         instances = reservation['Instances']
-        if(len(instances) > 0):
+        if (len(instances) > 0):
             inform_about_running_instances(instances, region)
 
 
 def lambda_handler(event, context):
-    global_ec2 = boto3.client('ec2')
+    global_ec2 = boto3.client('ec2', region_name="us-east-1")
     all_regions = global_ec2.describe_regions()['Regions']
-    
+
     for region in all_regions:
         check_region(region['RegionName'])
