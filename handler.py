@@ -2,8 +2,10 @@ import json
 import boto3
 from botocore.exceptions import ClientError
 
-sender_email = 'instancebot@outlook.com'
-always_send_to = ['lbootsman@mobiquityinc.com']
+# Make sure that any email address you plan to send to is added to SES
+# Also: this assumes the name of your account IS an email address
+sender_email = 'source email address'
+always_send_to = ['<addresses to always send to>']
 
 
 def send_email(source, target, body, email_client):
