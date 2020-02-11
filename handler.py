@@ -8,7 +8,18 @@ sender_email = 'source email address'
 always_send_to = ['<addresses to always send to>']
 
 
-def send_email(source: str, target: str, body: str, email_client):
+def _send_email(source: str, target: str, instance_name: str, region: str, email_client):
+    """
+    Sends a warning email for a running instance
+
+    :param source: Source email from which the email will be send. Required for sns.send_email
+    :param target: Target email address.
+    If None, the email will still be send to every user in the 'always_send_to' list
+    :param instance_name: The name of the running instance
+    :param region: String. The AWS region where the machine is.
+    :param email_client: A boto3 ses client
+    """
+    body = _create_warning_email(target, instance_name, region)
     targets = []
     targets.extend(always_send_to)
     if target is not None and "@" in target:
@@ -45,7 +56,15 @@ def send_email(source: str, target: str, body: str, email_client):
         print("Email sent! Message ID: {0}".format(response['MessageId'])),
 
 
-def send_warning_email(source: str, target: str, instance_name: str, region: str, email_client):
+def _create_warning_email(target: str, instance_name: str, region: str):
+    """
+    Formats a proper warning email about a running instance
+
+    :param target: Target owner of the instance
+    :param instance_name: The name of the instance
+    :param region: String. The AWS region where the machine is.
+    :return: A formatted string to be used as the email body
+    """
     hail = "-unknown-" if target is None else target
 
 
@@ -59,7 +78,7 @@ Thank you very much in advance,
 
 Lambda-bot
     """.format(email=hail, instance=instance_name, region=region)
-    send_email(source, target, message, email_client=email_client)
+    return message
 
 
 """
@@ -67,7 +86,15 @@ EC2
 """
 
 
-def inform_about_running_instances(instances: list, region: str):
+def _inform_about_running_instances(instances: list, region: str):
+    """
+    Looks for the owner of a (potentially group of) running EC2 instance(s) so we can inform them.
+
+    Note that if the instance was started 90 days or more ago, we can't retrieve the event in CloudTrail anymore
+
+    :param instances: A list of EC2 instances
+    :param region: String. The AWS region where the machine is.
+    """
     email_client = boto3.client('ses', region_name=region)
     local_cloudtrail = boto3.client('cloudtrail', region_name=region)
 
@@ -80,27 +107,40 @@ def inform_about_running_instances(instances: list, region: str):
     )['Events']
 
     for instance in instances:
-        inform_for_instance(instance['InstanceId'], email_client, events, region)
+        _inform_for_instance(instance['InstanceId'], email_client, events, region)
 
 
-def inform_for_instance(instance_id: str, email_client, events: dict, region: str):
+def _inform_for_instance(instance_id: str, email_client, events: dict, region: str):
+    """
+    Looks for the owner of a running notebook instance so we can inform them.
+
+    :param instance_id: The instance id of the running instance
+    :param email_client: A boto3 ses client
+    :param events: CloudTrail events of the RunInstances type
+    :param region: String. The AWS region where the machine is.
+    """
     email_send = False
     for event in events:
 
         for resource in event['Resources']:
             if (resource['ResourceType'] == 'AWS::EC2::Instance' and instance_id == resource['ResourceName']):
                 email_address = event['Username']
-                send_warning_email(sender_email, email_address, instance_id, region, email_client)
+                _send_email(sender_email, email_address, instance_id, region, email_client)
                 email_send = True
                 break
 
         if email_send:
             break
     if not email_send:
-        send_warning_email(sender_email, None, instance_id, region, email_client)
+        _send_email(sender_email, None, instance_id, region, email_client)
 
 
-def check_region_ec2(region: str):
+def _check_region_ec2(region: str):
+    """
+    Checks one region for running EC2 instances
+
+    :param region: String. The AWS region to check.
+    """
     local_ec2 = boto3.client('ec2', region_name=region)
     response = local_ec2.describe_instances(Filters=[{
         'Name': 'instance-state-code',
@@ -112,7 +152,7 @@ def check_region_ec2(region: str):
     for reservation in reservations:
         instances = reservation['Instances']
         if (len(instances) > 0):
-            inform_about_running_instances(instances, region)
+            _inform_about_running_instances(instances, region)
 
 
 """
@@ -120,7 +160,15 @@ Sagemaker
 """
 
 
-def inform_about_running_notebook(notebook: dict, region: str):
+def _inform_about_running_notebook(notebook: dict, region: str):
+    """
+    Looks for the owner of a running notebook instance so we can inform them.
+
+    Note that if the instance was started 90 days or more ago, we can't retrieve the event in CloudTrail anymore
+
+    :param notebook: A dictionary containing at least the instance name and ARN of the notebook instance
+    :param region: String. The AWS region where the machine is.
+    """
     email_client = boto3.client('ses', region_name=region)
     local_cloudtrail = boto3.client('cloudtrail', region_name=region)
     notebook_name = notebook["NotebookInstanceName"]
@@ -142,7 +190,7 @@ def inform_about_running_notebook(notebook: dict, region: str):
             event_notebook_arn = raw_cloudtrail_event["responseElements"]["notebookInstanceArn"]
             if event_notebook_arn == notebook_arn:
                 email_address = event['Username']
-                send_warning_email(sender_email, email_address, notebook_name, region, email_client)
+                _send_email(sender_email, email_address, notebook_name, region, email_client)
                 email_send = True
                 break
         except KeyError:
@@ -150,10 +198,15 @@ def inform_about_running_notebook(notebook: dict, region: str):
             # Don't crash if we can't find the right key
             print(f"Did not find the event's notebook ARN. Raw event: {event['CloudTrailEvent']}")
     if not email_send:
-        send_warning_email(sender_email, None, notebook_name, region, email_client)
+        _send_email(sender_email, None, notebook_name, region, email_client)
 
 
-def check_region_sagemaker(region: str):
+def _check_region_sagemaker(region: str):
+    """
+    Checks one region for running Sagemaker notebook instances
+
+    :param region: String. The AWS region to check.
+    """
     local_ec2 = boto3.client('sagemaker', region_name=region)
     response = local_ec2.list_notebook_instances()
 
@@ -162,7 +215,7 @@ def check_region_sagemaker(region: str):
     for notebook in notebooks:
         instances_state = notebook['NotebookInstanceStatus']
         if instances_state in ["Pending", "InService"]:
-            inform_about_running_notebook(notebook, region)
+            _inform_about_running_notebook(notebook, region)
 
 
 def lambda_handler(event, context):
@@ -170,5 +223,5 @@ def lambda_handler(event, context):
     all_regions = global_ec2.describe_regions()['Regions']
 
     for region in all_regions:
-        check_region_ec2(region['RegionName'])
-        check_region_sagemaker(region['RegionName'])
+        _check_region_ec2(region['RegionName'])
+        _check_region_sagemaker(region['RegionName'])
