@@ -6,9 +6,12 @@ from botocore.exceptions import ClientError
 # Also: this assumes the name of your account IS an email address
 sender_email = 'source email address'
 always_send_to = ['<addresses to always send to>']
+default_region_for_email_client = "eu-west-1"
+
+email_client = boto3.client('ses', region_name=default_region_for_email_client)
 
 
-def _send_email(source: str, target: str, instance_name: str, region: str, email_client):
+def _send_email(source: str, target: str, instance_name: str, region: str):
     """
     Sends a warning email for a running instance
 
@@ -17,7 +20,6 @@ def _send_email(source: str, target: str, instance_name: str, region: str, email
     If None, the email will still be send to every user in the 'always_send_to' list
     :param instance_name: The name of the running instance
     :param region: String. The AWS region where the machine is.
-    :param email_client: A boto3 ses client
     """
     body = _create_warning_email(target, instance_name, region)
     targets = []
@@ -31,24 +33,24 @@ def _send_email(source: str, target: str, instance_name: str, region: str, email
             "MessageId": f"{source} - {targets}"
         }
 
-        # response = email_client.send_email(
-        #     Destination={
-        #         'ToAddresses': targets
-        #     },
-        #     Message={
-        #         'Body': {
-        #             'Text': {
-        #                 'Charset': "UTF-8",
-        #                 'Data': body,
-        #             },
-        #         },
-        #         'Subject': {
-        #             'Charset': "UTF-8",
-        #             'Data': "Your instance is still running",
-        #         },
-        #     },
-        #     Source=source
-        # )
+        response = email_client.send_email(
+            Destination={
+                'ToAddresses': targets
+            },
+            Message={
+                'Body': {
+                    'Text': {
+                        'Charset': "UTF-8",
+                        'Data': body,
+                    },
+                },
+                'Subject': {
+                    'Charset': "UTF-8",
+                    'Data': "Your instance is still running",
+                },
+            },
+            Source=source
+        )
     # Display an error if something goes wrong.
     except ClientError as e:
         print(e.response['Error']['Message'])
@@ -95,7 +97,6 @@ def _inform_about_running_instances(instances: list, region: str):
     :param instances: A list of EC2 instances
     :param region: String. The AWS region where the machine is.
     """
-    email_client = boto3.client('ses', region_name=region)
     local_cloudtrail = boto3.client('cloudtrail', region_name=region)
 
     events = local_cloudtrail.lookup_events(
@@ -107,15 +108,14 @@ def _inform_about_running_instances(instances: list, region: str):
     )['Events']
 
     for instance in instances:
-        _inform_for_instance(instance['InstanceId'], email_client, events, region)
+        _inform_for_instance(instance['InstanceId'], events, region)
 
 
-def _inform_for_instance(instance_id: str, email_client, events: dict, region: str):
+def _inform_for_instance(instance_id: str, events: dict, region: str):
     """
     Looks for the owner of a running notebook instance so we can inform them.
 
     :param instance_id: The instance id of the running instance
-    :param email_client: A boto3 ses client
     :param events: CloudTrail events of the RunInstances type
     :param region: String. The AWS region where the machine is.
     """
@@ -125,14 +125,14 @@ def _inform_for_instance(instance_id: str, email_client, events: dict, region: s
         for resource in event['Resources']:
             if (resource['ResourceType'] == 'AWS::EC2::Instance' and instance_id == resource['ResourceName']):
                 email_address = event['Username']
-                _send_email(sender_email, email_address, instance_id, region, email_client)
+                _send_email(sender_email, email_address, instance_id, region)
                 email_send = True
                 break
 
         if email_send:
             break
     if not email_send:
-        _send_email(sender_email, None, instance_id, region, email_client)
+        _send_email(sender_email, None, instance_id, region)
 
 
 def _check_region_ec2(region: str):
@@ -169,7 +169,6 @@ def _inform_about_running_notebook(notebook: dict, region: str):
     :param notebook: A dictionary containing at least the instance name and ARN of the notebook instance
     :param region: String. The AWS region where the machine is.
     """
-    email_client = boto3.client('ses', region_name=region)
     local_cloudtrail = boto3.client('cloudtrail', region_name=region)
     notebook_name = notebook["NotebookInstanceName"]
     notebook_arn = notebook["NotebookInstanceArn"]
@@ -190,7 +189,7 @@ def _inform_about_running_notebook(notebook: dict, region: str):
             event_notebook_arn = raw_cloudtrail_event["responseElements"]["notebookInstanceArn"]
             if event_notebook_arn == notebook_arn:
                 email_address = event['Username']
-                _send_email(sender_email, email_address, notebook_name, region, email_client)
+                _send_email(sender_email, email_address, notebook_name, region)
                 email_send = True
                 break
         except KeyError:
@@ -198,7 +197,7 @@ def _inform_about_running_notebook(notebook: dict, region: str):
             # Don't crash if we can't find the right key
             print(f"Did not find the event's notebook ARN. Raw event: {event['CloudTrailEvent']}")
     if not email_send:
-        _send_email(sender_email, None, notebook_name, region, email_client)
+        _send_email(sender_email, None, notebook_name, region)
 
 
 def _check_region_sagemaker(region: str):
